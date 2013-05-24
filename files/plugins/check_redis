@@ -1,0 +1,102 @@
+#! /bin/bash
+
+# This script is supposed to check if redis is working properly. It will get information from redis itself, so it is possible to chec different values.
+
+# set -x
+
+SERVER=localhost
+PORT=6379
+WARNING=2000000
+CRITICAL=2500000
+ISSLAVE=0
+PASS=test
+
+WARN=0
+CRIT=0
+
+function help () {
+	echo "USAGE":
+	echo "$0 -S [SERVER] -p [port] -w [WARNING] -c [CRITICAL] -s"
+	echo "$0 -h" to print help
+	
+} #help
+
+function defaults () {
+	echo "SERVER=${SERVER}"
+	echo "PORT=${PORT}"
+	echo "WARNING=${WARNING}"
+	echo "CRITICAL=${CRITICAL}"
+} #defaults
+
+while getopts "dhS:p:w:c:P:s" o; do
+{
+	case $o in
+		d )	defaults
+			exit 0 ;;
+		h )	help
+			exit 0 ;;
+		S )	SERVER=${OPTARG} ;;
+		p )	PORT=${OPTARG} ;;
+		w )	WARNING=${OPTARG} ;;
+		c )	CRITICAL=${OPTARG} ;;
+		s )	ISSLAVE=1 ;;
+		P )	PASS=${OPTARG} ;;
+	esac
+}; done
+
+
+STATE_OK=0
+STATE_WARNING=1
+STATE_CRITICAL=2
+STATE_UNKNOWN=3
+
+
+
+redis-cli -h ${SERVER} -p ${PORT} -a ${PASS} info &> /dev/null
+if [ $? -ne 0 ]; then
+{
+	echo "ERROR: Could not connect to redis server on ${SERVER}:${PORT}"
+	exit ${STATE_CRITICAL}
+}; fi
+
+
+
+REDISINFO=$(redis-cli -h ${SERVER} -p ${PORT} -a ${PASS} info | sed 's/.$/\n/') #Es fa el sed perque la sortida es amb crlf
+OLDIFS="$IFS"
+IFS=$'\e'
+ROLE=$(echo ${REDISINFO} | grep role | awk -F : '{print $2}'|sed s/[^0-9a-zA-Z]//g)
+MEMORY=$(echo ${REDISINFO} | grep "used_memory:" | grep -v human | grep -v rss | awk -F : '{print $2}'|sed s/[^0-9a-zA-Z]//g)
+CLIENTS=$(echo ${REDISINFO} | grep connected_clients | awk -F : '{print $2}'|sed s/[^0-9a-zA-Z]//g)
+BLOCKED_CLIENTS=$(echo ${REDISINFO} | grep blocked_clients | awk -F : '{print $2}'|sed s/[^0-9a-zA-Z]//g)
+SLAVES=$(echo ${REDISINFO} | grep connected_slaves | awk -F : '{print $2}'|sed s/[^0-9a-zA-Z]//g)
+LAST_SAVE=$(echo ${REDISINFO} | grep last_save_time | awk -F : '{print $2}'|sed s/[^0-9a-zA-Z]//g)
+TOTALCONN=$(echo ${REDISINFO} | grep total_connections_received | awk -F : '{print $2}'|sed s/[^0-9a-zA-Z]//g)
+EXPIRED_KEYS=$(echo ${REDISINFO} | grep expired_keys | awk -F : '{print $2}' |sed s/[^0-9a-zA-Z]//g)
+EVICTED_KEYS=$(echo ${REDISINFO} | grep evicted_keys | awk -F : '{print $2}' |sed s/[^0-9a-zA-Z]//g)
+IFS="$OLDIFS"
+
+if [ ${ISSLAVE} -eq 1 ] && [ ${ROLE} == "master" ]; then
+{
+	echo "CRITICAL: Redis server on ${SERVER}:${PORT} as ${ROLE} with ${CLIENTS} clients, ${BLOCKED_CLIENTS} blocked clients, ${SLAVES} slaves, ${TOTALCONN} total connections, ${EXPIRED_KEYS} expired keys, ${EVICTED_KEYS} evicted keys, and last saved on ${LAST_SAVE},  is supposed to be a slave, but is a master."
+	exit ${STATE_CRITICAL}
+}; fi
+if [ ${ISSLAVE} -eq 0 ] && [ ${ROLE} != "master" ]; then
+{
+	echo "CRITICAL: Redis server on ${SERVER}:${PORT} as ${ROLE} with ${CLIENTS} clients, ${BLOCKED_CLIENTS} blocked clients, ${SLAVES} slaves, ${TOTALCONN} total connections, ${EXPIRED_KEYS} expired keys, ${EVICTED_KEYS} evicted keys, and last saved on ${LAST_SAVE},  is supposed to be a master, but is a slave."
+	exit ${STATE_CRITICAL}
+}; fi
+
+if [ ${MEMORY} -ge ${CRITICAL} ]; then
+{
+	echo "CRITICAL: Redis server on ${SERVER}:${PORT} as ${ROLE} with ${CLIENTS} clients, ${BLOCKED_CLIENTS} blocked clients, ${SLAVES} slaves, ${TOTALCONN} total connections, ${EXPIRED_KEYS} expired keys, ${EVICTED_KEYS} evicted keys, and last saved on ${LAST_SAVE},  EXCEEDS the maximum memory ${MEMORY}/${CRITICAL} ."
+	exit ${STATE_CRITICAL}
+}; fi
+
+if [ ${MEMORY} -ge ${WARNING} ]; then
+{
+	echo "WARNING: Redis server on ${SERVER}:${PORT} as ${ROLE} with ${CLIENTS} clients, ${BLOCKED_CLIENTS} blocked clients, ${SLAVES} slaves, ${TOTALCONN} total connections, ${EXPIRED_KEYS} expired keys, ${EVICTED_KEYS} evicted keys, and last saved on ${LAST_SAVE},  EXCEEDS the maximum memory ${MEMORY}/${WARNING} ."
+	exit ${STATE_WARNING}
+}; fi
+
+echo "OK: Redis server on ${SERVER}:${PORT} as ${ROLE} with ${CLIENTS} clients, ${BLOCKED_CLIENTS} blocked clients, ${SLAVES} slaves, ${TOTALCONN} total connections, ${EXPIRED_KEYS} expired keys, ${EVICTED_KEYS} evicted keys, and last saved on ${LAST_SAVE}, is using ${MEMORY} of memory ."
+exit ${STATE_OK}
